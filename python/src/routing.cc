@@ -5,17 +5,115 @@
 #include "nigiri/routing/raptor_search.h"
 #include "nigiri/routing/clasz_mask.h"
 #include "nigiri/routing/limits.h"
+#include "nigiri/routing/one_to_all.h"
+#include "nigiri/routing/raptor/raptor_state.h"
 #include "nigiri/routing/search.h"
+#include "nigiri/rt/frun.h"
 #include "nigiri/timetable.h"
 
 #include <chrono>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <variant>
 #include <vector>
 
 namespace py = pybind11;
 using namespace nigiri;
 using namespace nigiri::routing;
+
+namespace {
+
+std::string leg_kind(journey::leg const& leg) {
+  if (std::holds_alternative<journey::run_enter_exit>(leg.uses_)) {
+    return "transport";
+  }
+  if (std::holds_alternative<footpath>(leg.uses_)) {
+    return "footpath";
+  }
+  return "offset";
+}
+
+py::object get_transport_info(journey::leg const& leg,
+                              timetable const& tt,
+                              rt_timetable const* rtt) {
+  auto const* run_info = std::get_if<journey::run_enter_exit>(&leg.uses_);
+  if (run_info == nullptr) {
+    return py::none();
+  }
+
+  auto const fr = rt::frun{tt, rtt, run_info->r_};
+  auto const first_stop = fr[run_info->stop_range_.from_];
+  auto const last_stop = fr[run_info->stop_range_.to_ - 1U];
+  auto const trip_id = fr.id();
+
+  py::dict info;
+  info["is_rt"] = py::bool_(run_info->r_.is_rt());
+  info["is_scheduled"] = py::bool_(run_info->r_.is_scheduled());
+  info["trip_id"] = py::str(trip_id.id_);
+  info["trip_source"] = py::int_(trip_id.src_.v_);
+  info["run_name"] = py::str(fr.name(std::nullopt));
+  info["route_id"] = py::str(first_stop.get_route_id(event_type::kDep));
+  info["route_short_name"] =
+      py::str(first_stop.route_short_name(event_type::kDep, std::nullopt));
+  info["route_long_name"] =
+      py::str(first_stop.route_long_name(event_type::kDep, std::nullopt));
+  info["display_name"] =
+      py::str(first_stop.display_name(event_type::kDep, std::nullopt));
+  info["from_stop_id"] = py::str(first_stop.get_location_id());
+  info["to_stop_id"] = py::str(last_stop.get_location_id());
+  info["stop_range_from"] = py::int_(run_info->stop_range_.from_);
+  info["stop_range_to"] = py::int_(run_info->stop_range_.to_);
+  if (run_info->r_.t_.is_valid()) {
+    info["transport_idx"] = py::int_(run_info->r_.t_.t_idx_.v_);
+    info["day_idx"] = py::int_(run_info->r_.t_.day_.v_);
+  } else {
+    info["transport_idx"] = py::none();
+    info["day_idx"] = py::none();
+  }
+  if (run_info->r_.rt_ != rt_transport_idx_t::invalid()) {
+    info["rt_transport_idx"] = py::int_(run_info->r_.rt_.v_);
+  } else {
+    info["rt_transport_idx"] = py::none();
+  }
+
+  return std::move(info);
+}
+
+py::object get_footpath_info(journey::leg const& leg) {
+  auto const* fp = std::get_if<footpath>(&leg.uses_);
+  if (fp == nullptr) {
+    return py::none();
+  }
+
+  py::dict info;
+  info["duration"] = py::int_(fp->duration().count());
+  info["target"] = py::int_(fp->target().v_);
+  return std::move(info);
+}
+
+py::object get_offset_info(journey::leg const& leg) {
+  auto const* off = std::get_if<offset>(&leg.uses_);
+  if (off == nullptr) {
+    return py::none();
+  }
+
+  py::dict info;
+  info["duration"] = py::int_(off->duration().count());
+  info["target"] = py::int_(off->target().v_);
+  info["transport_mode_id"] = py::int_(off->type());
+  return std::move(info);
+}
+
+unixtime_t get_one_to_all_start_time(query const& q) {
+  if (!std::holds_alternative<unixtime_t>(q.start_time_)) {
+    throw std::runtime_error(
+        "one_to_all requires query.start_time to be a single time point");
+  }
+  return std::get<unixtime_t>(q.start_time_);
+}
+
+}  // namespace
 
 void init_routing(py::module_& m) {
   // Transport mode ID - just return the int directly
@@ -163,13 +261,48 @@ void init_routing(py::module_& m) {
         [](journey::leg const& l) {
           return l.arr_time_.time_since_epoch().count();
         })
+      .def("duration", [](journey::leg const& l) {
+        return std::abs((l.arr_time_ - l.dep_time_).count());
+      })
+      .def_property_readonly("kind", [](journey::leg const& l) {
+        return leg_kind(l);
+      })
+      .def("is_transport", [](journey::leg const& l) {
+        return std::holds_alternative<journey::run_enter_exit>(l.uses_);
+      })
+      .def("is_footpath", [](journey::leg const& l) {
+        return std::holds_alternative<footpath>(l.uses_);
+      })
+      .def("is_offset", [](journey::leg const& l) {
+        return std::holds_alternative<offset>(l.uses_);
+      })
+      .def("transport_info", &get_transport_info,
+           py::arg("timetable"), py::arg("rt_timetable") = nullptr,
+           "Return transit leg metadata or None for non-transport legs")
+      .def("footpath_info", &get_footpath_info,
+           "Return footpath metadata or None")
+      .def("offset_info", &get_offset_info,
+           "Return offset (MUMO) metadata or None")
+      .def("from_id", [](journey::leg const& l, timetable const& tt) {
+        return std::string(tt.locations_.ids_[l.from_].view());
+      }, py::arg("timetable"))
+      .def("to_id", [](journey::leg const& l, timetable const& tt) {
+        return std::string(tt.locations_.ids_[l.to_].view());
+      }, py::arg("timetable"))
+      .def("from_name", [](journey::leg const& l, timetable const& tt) {
+        return std::string(tt.get_default_name(l.from_));
+      }, py::arg("timetable"))
+      .def("to_name", [](journey::leg const& l, timetable const& tt) {
+        return std::string(tt.get_default_name(l.to_));
+      }, py::arg("timetable"))
       .def(py::self == py::self)
       .def(py::self < py::self)
       .def("__repr__", [](journey::leg const& leg) {
         return "Leg(from=" + std::to_string(leg.from_.v_) +
                ", to=" + std::to_string(leg.to_.v_) +
                ", dep=" + std::to_string(leg.dep_time_.time_since_epoch().count()) +
-               ", arr=" + std::to_string(leg.arr_time_.time_since_epoch().count()) + ")";
+               ", arr=" + std::to_string(leg.arr_time_.time_since_epoch().count()) +
+               ", kind=" + leg_kind(leg) + ")";
       });
 
   // Journey
@@ -186,6 +319,8 @@ void init_routing(py::module_& m) {
           return j.dest_time_.time_since_epoch().count();
         })
       .def_readonly("transfers", &journey::transfers_)
+      .def_readonly("destination", &journey::dest_)
+      .def_readonly("error", &journey::error_)
       
       // Return travel_time as int (minutes)
       .def("travel_time", [](journey const& j) {
@@ -196,6 +331,11 @@ void init_routing(py::module_& m) {
       })
       .def("arrival_time", [](journey const& j) {
         return j.arrival_time().time_since_epoch().count();
+      })
+      .def("transport_legs", [](journey const& j) {
+        return std::count_if(begin(j.legs_), end(j.legs_), [](journey::leg const& l) {
+          return std::holds_alternative<journey::run_enter_exit>(l.uses_);
+        });
       })
       .def("dominates", &journey::dominates)
       
@@ -214,12 +354,43 @@ void init_routing(py::module_& m) {
         return j.legs_[i];
       });
 
+  // One-to-all output
+  py::class_<fastest_offset>(m, "FastestOffset")
+      .def(py::init<>())
+      .def_readonly("duration", &fastest_offset::duration_)
+      .def_readonly("transfers", &fastest_offset::k_)
+      .def("has_connection", [](fastest_offset const& fo) {
+        return fo.k_ != std::numeric_limits<std::uint8_t>::max();
+      })
+      .def("__repr__", [](fastest_offset const& fo) {
+        auto const no_connection =
+            fo.k_ == std::numeric_limits<std::uint8_t>::max();
+        if (no_connection) {
+          return std::string("FastestOffset(no_connection)");
+        }
+        return "FastestOffset(duration=" + std::to_string(fo.duration_) +
+               ", transfers=" + std::to_string(fo.k_) + ")";
+      });
+
+  py::class_<raptor_state>(m, "RaptorState")
+      .def(py::init<>())
+      .def_property_readonly("n_locations",
+                             [](raptor_state const& s) {
+                               return s.n_locations_;
+                             })
+      .def("__repr__", [](raptor_state const& s) {
+        return "RaptorState(n_locations=" + std::to_string(s.n_locations_) +
+               ")";
+      });
+
   // Routing functions  
   m.def("route",
-        [](timetable const& tt, query q) -> std::vector<journey> {
+        [](timetable const& tt, query q,
+           direction dir) -> std::vector<journey> {
           search_state s_state;
           raptor_state r_state;
-          auto const results = raptor_search(tt, nullptr, s_state, r_state, std::move(q), direction::kForward);
+          auto const results =
+              raptor_search(tt, nullptr, s_state, r_state, std::move(q), dir);
           if (results.journeys_ == nullptr) {
             return {};
           }
@@ -227,6 +398,7 @@ void init_routing(py::module_& m) {
         },
         py::arg("timetable"),
         py::arg("query"),
+        py::arg("direction") = direction::kForward,
         "Execute routing query");
 
   m.def("route_with_rt",
@@ -234,7 +406,8 @@ void init_routing(py::module_& m) {
         -> std::vector<journey> {
           search_state s_state;
           raptor_state r_state;
-          auto const results = raptor_search(tt, rtt, s_state, r_state, std::move(q), direction::kForward);
+          auto const results = raptor_search(
+              tt, rtt, s_state, r_state, std::move(q), direction::kForward);
           if (results.journeys_ == nullptr) {
             return {};
           }
@@ -244,4 +417,95 @@ void init_routing(py::module_& m) {
         py::arg("rt_timetable"),
         py::arg("query"),
         "Execute routing query with real-time data");
+
+  m.def("route_with_rt",
+        [](timetable const& tt,
+           rt_timetable const* rtt,
+           query q,
+           direction dir) -> std::vector<journey> {
+          search_state s_state;
+          raptor_state r_state;
+          auto const results =
+              raptor_search(tt, rtt, s_state, r_state, std::move(q), dir);
+          if (results.journeys_ == nullptr) {
+            return {};
+          }
+          return std::vector<journey>{results.journeys_->begin(),
+                                      results.journeys_->end()};
+        },
+        py::arg("timetable"),
+        py::arg("rt_timetable"),
+        py::arg("query"),
+        py::arg("direction"),
+        "Execute routing query with real-time data and explicit direction");
+
+  // One-to-all routing (returns internal raptor state)
+  m.def("one_to_all",
+        [](timetable const& tt,
+           query q,
+           direction dir,
+           rt_timetable const* rtt) -> raptor_state {
+          if (dir == direction::kForward) {
+            return one_to_all<direction::kForward>(tt, rtt, q);
+          }
+          return one_to_all<direction::kBackward>(tt, rtt, q);
+        },
+        py::arg("timetable"),
+        py::arg("query"),
+        py::arg("direction") = direction::kForward,
+        py::arg("rt_timetable") = nullptr,
+        "Execute one-to-all routing and return search state");
+
+  // Extract one-to-all result for a single location.
+  m.def("one_to_all_fastest_offset",
+        [](timetable const& tt,
+           raptor_state const& state,
+           direction dir,
+           location_idx_t location,
+           unixtime_t start_time,
+           std::uint8_t max_transfers) {
+          return get_fastest_one_to_all_offsets(
+              tt, state, dir, location, start_time, max_transfers);
+        },
+        py::arg("timetable"),
+        py::arg("state"),
+        py::arg("direction"),
+        py::arg("location"),
+        py::arg("start_time"),
+        py::arg("max_transfers") = kMaxTransfers,
+        "Get fastest one-to-all result for one location");
+
+  // Convenience helper that runs one-to-all and returns per-location summary.
+  m.def("one_to_all_fastest_offsets",
+        [](timetable const& tt,
+           query q,
+           direction dir,
+           std::uint8_t max_transfers,
+           rt_timetable const* rtt) {
+          auto const start_time = get_one_to_all_start_time(q);
+          auto state = dir == direction::kForward
+                           ? one_to_all<direction::kForward>(tt, rtt, q)
+                           : one_to_all<direction::kBackward>(tt, rtt, q);
+
+          py::list out;
+          for (auto i = 0U; i < tt.n_locations(); ++i) {
+            auto const loc = location_idx_t{i};
+            auto const fastest = get_fastest_one_to_all_offsets(
+                tt, state, dir, loc, start_time, max_transfers);
+            py::dict row;
+            row["location"] = py::int_(loc.v_);
+            row["duration"] = py::int_(fastest.duration_);
+            row["transfers"] = py::int_(fastest.k_);
+            row["has_connection"] =
+                py::bool_(fastest.k_ != std::numeric_limits<std::uint8_t>::max());
+            out.append(std::move(row));
+          }
+          return out;
+        },
+        py::arg("timetable"),
+        py::arg("query"),
+        py::arg("direction") = direction::kForward,
+        py::arg("max_transfers") = kMaxTransfers,
+        py::arg("rt_timetable") = nullptr,
+        "Run one-to-all routing and return fastest offsets for all locations");
 }

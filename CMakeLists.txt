@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
 project(nigiri)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+option(NIGIRI_BUILD_TOOLS "Build nigiri command-line tools" ON)
+option(NIGIRI_BUILD_TESTS "Build nigiri C++ tests" ON)
+
 if (NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
   if (NIGIRI_MIMALLOC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
@@ -17,6 +22,7 @@ include(cmake/pkg.cmake)
 add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/gtfsrt/gtfs-realtime.pb.h
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/gtfsrt/gtfs-realtime.pb.cc
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/generated/gtfsrt
       COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:protoc>
       --cpp_out=${CMAKE_CURRENT_BINARY_DIR}/generated/gtfsrt
       --proto_path=${CMAKE_CURRENT_SOURCE_DIR}
@@ -116,43 +122,53 @@ target_compile_options(nigiri PRIVATE ${nigiri-compile-options})
 target_compile_definitions(nigiri PUBLIC PUGIXML_COMPACT=1)
 
 # --- IMPORTER ---
-file(GLOB_RECURSE nigiri-import-files exe/import.cc)
-add_executable(nigiri-import ${nigiri-import-files})
-target_link_libraries(nigiri-import PRIVATE nigiri boost-program_options ianatzdb-res)
-target_compile_features(nigiri-import PUBLIC cxx_std_23)
+if (NIGIRI_BUILD_TOOLS)
+  file(GLOB_RECURSE nigiri-import-files exe/import.cc)
+  add_executable(nigiri-import ${nigiri-import-files})
+  target_link_libraries(nigiri-import PRIVATE nigiri boost-program_options ianatzdb-res)
+  target_compile_features(nigiri-import PUBLIC cxx_std_23)
 
-# --- BENCHMARK ---
-file(GLOB_RECURSE nigiri-benchmark-files exe/benchmark.cc)
-add_executable(nigiri-benchmark ${nigiri-benchmark-files})
-target_link_libraries(nigiri-benchmark PRIVATE nigiri boost-program_options ianatzdb-res)
-target_compile_features(nigiri-benchmark PUBLIC cxx_std_23)
+  # --- BENCHMARK ---
+  file(GLOB_RECURSE nigiri-benchmark-files exe/benchmark.cc)
+  add_executable(nigiri-benchmark ${nigiri-benchmark-files})
+  target_link_libraries(nigiri-benchmark PRIVATE nigiri boost-program_options ianatzdb-res)
+  target_compile_features(nigiri-benchmark PUBLIC cxx_std_23)
 
-# --- QA ---
-file(GLOB_RECURSE nigiri-qa-files exe/qa.cc)
-add_executable(nigiri-qa ${nigiri-qa-files})
-target_link_libraries(nigiri-qa PRIVATE nigiri boost-program_options)
-target_compile_features(nigiri-qa PUBLIC cxx_std_23)
+  # --- QA ---
+  file(GLOB_RECURSE nigiri-qa-files exe/qa.cc)
+  add_executable(nigiri-qa ${nigiri-qa-files})
+  target_link_libraries(nigiri-qa PRIVATE nigiri boost-program_options)
+  target_compile_features(nigiri-qa PUBLIC cxx_std_23)
+endif ()
 
 # --- TEST ---
-add_library(nigiri-generated INTERFACE)
-target_include_directories(nigiri-generated INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/generated)
-configure_file(
-      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_dir.h.in
-      ${CMAKE_CURRENT_BINARY_DIR}/generated/test_dir.h
-)
-file(GLOB_RECURSE nigiri-test-files test/*.cc)
-add_executable(nigiri-test ${nigiri-test-files})
-target_include_directories(nigiri-test PRIVATE include)
-target_link_libraries(nigiri-test nigiri gmock ianatzdb-res nigiri-generated)
-target_compile_features(nigiri-test PUBLIC cxx_std_23)
-target_compile_options(nigiri-test PRIVATE ${nigiri-compile-options})
+if (NIGIRI_BUILD_TESTS)
+  add_library(nigiri-generated INTERFACE)
+  target_include_directories(nigiri-generated INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+  configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/test_dir.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/test_dir.h
+  )
+  file(GLOB_RECURSE nigiri-test-files test/*.cc)
+  add_executable(nigiri-test ${nigiri-test-files})
+  target_include_directories(nigiri-test PRIVATE include)
+  target_link_libraries(nigiri-test nigiri gmock ianatzdb-res nigiri-generated)
+  target_compile_features(nigiri-test PUBLIC cxx_std_23)
+  target_compile_options(nigiri-test PRIVATE ${nigiri-compile-options})
+endif ()
 
 
 # MacOS fix for LuaJIT
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
-  target_link_options(nigiri-import PRIVATE -Wl,-no_deduplicate)
-  target_link_options(nigiri-test PRIVATE -Wl,-no_deduplicate)
-  target_link_options(nigiri-benchmark PRIVATE -Wl,-no_deduplicate)
+  if (TARGET nigiri-import)
+    target_link_options(nigiri-import PRIVATE -Wl,-no_deduplicate)
+  endif ()
+  if (TARGET nigiri-test)
+    target_link_options(nigiri-test PRIVATE -Wl,-no_deduplicate)
+  endif ()
+  if (TARGET nigiri-benchmark)
+    target_link_options(nigiri-benchmark PRIVATE -Wl,-no_deduplicate)
+  endif ()
 endif()
 
 

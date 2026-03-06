@@ -37,7 +37,13 @@ dev = [
 [tool.scikit-build]
 cmake.build-type = "Release"
 cmake.source-dir = ".."
-cmake.args = ["-DPYTHON_BINDING=ON", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"]
+cmake.args = [
+    "-DPYTHON_BINDING=ON",
+    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+    "-DNO_BUILDCACHE=ON",
+    "-DNIGIRI_BUILD_TOOLS=OFF",
+    "-DNIGIRI_BUILD_TESTS=OFF",
+]
 wheel.packages = ["pynigiri"]
 
 [tool.black]

@@ -1,5 +1,9 @@
 #pragma once
 
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "date/date.h"
 
 namespace nigiri::loader::gtfs {
