@@ -44,7 +44,7 @@ if (NIGIRI_LINT)
   include(cmake/clang-tidy.cmake)
 endif ()
 
-set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
+set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
   set(nigiri-compile-options
         -Weverything

@@ -104,12 +104,16 @@ void init_types(py::module_& m) {
       .value("HIGHSPEED", clasz::kHighSpeed)
       .value("LONG_DISTANCE", clasz::kLongDistance)
       .value("NIGHT", clasz::kNight)
+      .value("RIDE_SHARING", clasz::kRideSharing)
       .value("REGIONAL", clasz::kRegional)
-      .value("REGIONAL_FAST", clasz::kRegionalFast)
+      .value("SUBURBAN", clasz::kSuburban)
       .value("SUBWAY", clasz::kSubway)
       .value("TRAM", clasz::kTram)
       .value("BUS", clasz::kBus)
       .value("SHIP", clasz::kShip)
+      .value("ODM", clasz::kODM)
+      .value("FUNICULAR", clasz::kFunicular)
+      .value("AERIAL_LIFT", clasz::kAerialLift)
       .value("OTHER", clasz::kOther)
       .export_values();
 
