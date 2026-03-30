@@ -45,14 +45,18 @@ jobs:
             -DNO_BUILDCACHE=ON
 
       - name: Build
-        run: cmake --build build --target nigiri-import nigiri-benchmark nigiri-qa -j$(nproc)
+        run: cmake --build build -j$(nproc)
 
-      - name: Package binaries
+      - name: Package
         run: |
-          mkdir -p dist
-          cp build/nigiri-import dist/
-          cp build/nigiri-benchmark dist/
-          cp build/nigiri-qa dist/
+          mkdir -p dist/{lib,bin,include}
+          cp build/libnigiri.a dist/lib/ || cp build/libnigiri.so dist/lib/ || true
+          cp build/libgtfsrt.a dist/lib/ || cp build/libgtfsrt.so dist/lib/ || true
+          cp -r include/nigiri dist/include/
+          cp -r build/generated/gtfsrt dist/include/
+          cp build/nigiri-import dist/bin/
+          cp build/nigiri-benchmark dist/bin/
+          cp build/nigiri-qa dist/bin/
           tar -czf nigiri-cpp-linux-${{ matrix.arch }}.tar.gz -C dist .
 
       - uses: actions/upload-artifact@v4
