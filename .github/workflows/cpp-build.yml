@@ -1,4 +1,4 @@
-name: Build C++ Binaries
+name: Build C++ SDK
 
 on:
   push:
@@ -47,22 +47,62 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      - name: Package
+      - name: Package SDK
         run: |
-          mkdir -p dist/{lib,bin,include}
-          cp build/libnigiri.a dist/lib/ || cp build/libnigiri.so dist/lib/ || true
-          cp build/libgtfsrt.a dist/lib/ || cp build/libgtfsrt.so dist/lib/ || true
-          cp -r include/nigiri dist/include/
-          cp -r build/generated/gtfsrt dist/include/
-          cp build/nigiri-import dist/bin/
-          cp build/nigiri-benchmark dist/bin/
-          cp build/nigiri-qa dist/bin/
-          tar -czf nigiri-cpp-linux-${{ matrix.arch }}.tar.gz -C dist .
+          set -euo pipefail
+          SDK_DIR="$(mktemp -d)"
+          mkdir -p "$SDK_DIR/lib" "$SDK_DIR/include" "$SDK_DIR/bin"
+
+          # 1. Static libraries — collect every .a from the build tree
+          find build -name '*.a' -exec cp {} "$SDK_DIR/lib/" \;
+
+          # 2. Nigiri public headers
+          cp -r include/nigiri "$SDK_DIR/include/"
+
+          # 3. Generated protobuf headers
+          cp -r build/generated/gtfsrt "$SDK_DIR/include/"
+
+          # 4. Dependency headers — standard layout (deps/X/include/...)
+          for dep in cista geo fmt date utl unordered_dense oh sol2 PEGTL; do
+            if [ -d "deps/$dep/include" ]; then
+              cp -r deps/$dep/include/* "$SDK_DIR/include/"
+            fi
+          done
+
+          # opentelemetry has api + sdk split
+          for sub in api sdk; do
+            if [ -d "deps/opentelemetry-cpp/$sub/include" ]; then
+              cp -r deps/opentelemetry-cpp/$sub/include/* "$SDK_DIR/include/"
+            fi
+          done
+
+          # Dependency headers — non-standard layouts
+          [ -d "deps/boost/boost" ] && cp -r deps/boost/boost "$SDK_DIR/include/boost"
+          for f in deps/pugixml/src/*.hpp; do [ -f "$f" ] && cp "$f" "$SDK_DIR/include/"; done
+          [ -f "deps/miniz/miniz.h" ] && cp deps/miniz/miniz.h "$SDK_DIR/include/"
+          [ -f "deps/wyhash/wyhash.h" ] && cp deps/wyhash/wyhash.h "$SDK_DIR/include/"
+          [ -f "deps/tg/tg.h" ] && cp deps/tg/tg.h "$SDK_DIR/include/"
+          [ -f "deps/rtree.c/rtree.h" ] && cp deps/rtree.c/rtree.h "$SDK_DIR/include/"
+
+          # 5. Executables
+          for bin in nigiri-import nigiri-benchmark nigiri-qa; do
+            [ -f "build/$bin" ] && cp "build/$bin" "$SDK_DIR/bin/"
+          done
+
+          # 6. Package
+          tar -czf nigiri-sdk-linux-${{ matrix.arch }}.tar.gz -C "$SDK_DIR" .
+          rm -rf "$SDK_DIR"
+
+          # 7. Verify
+          echo "=== Static libraries ==="
+          tar tzf nigiri-sdk-linux-${{ matrix.arch }}.tar.gz | grep '\.a$' | wc -l
+          echo "=== Key transitive headers ==="
+          tar tzf nigiri-sdk-linux-${{ matrix.arch }}.tar.gz | grep -E '(cista/memory_holder|geo/latlng|fmt/ostream|date/date)\.h' || echo "WARNING: missing expected headers"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nigiri-cpp-linux-${{ matrix.arch }}
-          path: nigiri-cpp-linux-${{ matrix.arch }}.tar.gz
+          name: nigiri-sdk-linux-${{ matrix.arch }}
+          path: nigiri-sdk-linux-${{ matrix.arch }}.tar.gz
 
   release:
     name: Update latest-cpp release
@@ -77,7 +117,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: nigiri-cpp-linux-*
+          pattern: nigiri-sdk-linux-*
           path: assets
           merge-multiple: true
 
@@ -89,6 +129,11 @@ jobs:
           git tag -f latest-cpp
           git push -f origin latest-cpp
           gh release create latest-cpp assets/*.tar.gz \
-            --title "Latest C++ Build" \
-            --notes "Rolling release from \`pynigiri\` branch. Updated on $(date -u +%Y-%m-%dT%H:%M:%SZ) from commit ${GITHUB_SHA::8}." \
+            --title "Latest C++ SDK" \
+            --notes "Rolling SDK release from \`pynigiri\` branch. Updated on $(date -u +%Y-%m-%dT%H:%M:%SZ) from commit ${GITHUB_SHA::8}.
+
+          Contains:
+          - Static libraries (libnigiri.a + all dependencies)
+          - Headers (nigiri + all transitive dependency headers)
+          - CLI tools (nigiri-import, nigiri-benchmark, nigiri-qa)" \
             --prerelease
