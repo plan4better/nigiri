@@ -2,82 +2,59 @@ name: Build and Publish Python Wheels
 
 on:
   push:
+    branches: [pynigiri]
     tags:
-      - 'v*'  # Attiva su tag versione (es. v0.1.0)
-  workflow_dispatch:  # Permette esecuzione manuale
+      - 'v*'
+  pull_request:
+    branches: [pynigiri]
+  workflow_dispatch:
   release:
     types: [published]
 
 jobs:
   build_wheels:
-    name: Build wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build wheels (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest]  # Windows and macOS disabled for now
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            cibw_archs: x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            cibw_archs: aarch64
 
     steps:
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml', '**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Set up QEMU for cross-compilation
-        if: runner.os == 'Linux'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Install GCC 13 on Linux
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
-
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.22
         env:
-          CIBW_BUILD: cp311-*  # Solo Python 3.10+ per semplificare
+          CIBW_BUILD: "cp311-*"
           CIBW_SKIP: "*-musllinux_* pp*"
-          CIBW_ARCHS_LINUX: x86_64
-          CIBW_ARCHS_MACOS: x86_64 arm64
-          CIBW_ARCHS_WINDOWS: AMD64
-          CIBW_BUILD_VERBOSITY: 3  # Aumenta verbosità per vedere gli errori
-          # Usa manylinux_2_28 che ha GCC 11+
+          CIBW_ARCHS_LINUX: ${{ matrix.cibw_archs }}
+          CIBW_BUILD_VERBOSITY: 3
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          # Configura CMake e compilatore
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
           CIBW_ENVIRONMENT_LINUX: >
-            CMAKE_ARGS="-DPYTHON_BINDING=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DNO_BUILDCACHE=ON"
+            CMAKE_ARGS="-DPYTHON_BINDING=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DNO_BUILDCACHE=ON -DNIGIRI_BUILD_TOOLS=OFF -DNIGIRI_BUILD_TESTS=OFF"
             CC=/opt/rh/gcc-toolset-14/root/usr/bin/gcc
             CXX=/opt/rh/gcc-toolset-14/root/usr/bin/g++
             PATH=/opt/rh/gcc-toolset-14/root/usr/bin:$PATH
             LDFLAGS="-lpthread -ldl"
-          CIBW_ENVIRONMENT_MACOS: >
-            CMAKE_ARGS="-DPYTHON_BINDING=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DNO_BUILDCACHE=ON"
-            MACOSX_DEPLOYMENT_TARGET=10.15
-          CIBW_ENVIRONMENT_WINDOWS: >
-            CMAKE_ARGS="-DPYTHON_BINDING=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DNO_BUILDCACHE=ON"
-          # Installa dipendenze
           CIBW_BEFORE_BUILD_LINUX: >
             yum install -y openssl-devel python3-devel gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ gcc-toolset-14-libatomic-devel
-          CIBW_BEFORE_BUILD_MACOS: >
-            brew install openssl || true
-          # Disabilita i test per ora
-          CIBW_PROJECT_REQUIRES_PYTHON: ">=3.10"
+          CIBW_PROJECT_REQUIRES_PYTHON: ">=3.11"
         with:
           package-dir: ./python
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          name: wheels-linux-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
 
   build_sdist:
@@ -93,7 +70,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-sdist
+          name: sdist
           path: python/dist/*.tar.gz
 
   upload_pypi:
@@ -101,13 +78,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write  # Per trusted publishing
+      id-token: write
     if: github.event_name == 'release' && github.event.action == 'published'
-    
+
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: cibw-*
+          pattern: "{wheels-*,sdist}"
           path: dist
           merge-multiple: true
 

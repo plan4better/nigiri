@@ -1,0 +1,81 @@
+name: Build C++ Binaries
+
+on:
+  push:
+    branches: [pynigiri]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [pynigiri]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 ninja-build libssl-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DNIGIRI_BUILD_TOOLS=ON \
+            -DNIGIRI_BUILD_TESTS=OFF \
+            -DNO_BUILDCACHE=ON
+
+      - name: Build
+        run: cmake --build build --target nigiri-import nigiri-benchmark nigiri-qa -j$(nproc)
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp build/nigiri-import dist/
+          cp build/nigiri-benchmark dist/
+          cp build/nigiri-qa dist/
+          tar -czf nigiri-linux-${{ matrix.arch }}.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nigiri-linux-${{ matrix.arch }}
+          path: nigiri-linux-${{ matrix.arch }}.tar.gz
+
+  release:
+    name: Upload release assets
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nigiri-linux-*
+          path: assets
+          merge-multiple: true
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*.tar.gz
