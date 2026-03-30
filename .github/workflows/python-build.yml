@@ -1,4 +1,4 @@
-name: Build and Publish Python Wheels
+name: Build Python Wheels
 
 on:
   push:
@@ -8,8 +8,6 @@ on:
   pull_request:
     branches: [pynigiri]
   workflow_dispatch:
-  release:
-    types: [published]
 
 jobs:
   build_wheels:
@@ -19,10 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
+          - arch: amd64
             runner: ubuntu-latest
             cibw_archs: x86_64
-          - arch: aarch64
+          - arch: arm64
             runner: ubuntu-24.04-arm
             cibw_archs: aarch64
 
@@ -54,7 +52,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.arch }}
+          name: nigiri-python-linux-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
 
   build_sdist:
@@ -70,25 +68,34 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: nigiri-python-sdist
           path: python/dist/*.tar.gz
 
-  upload_pypi:
+  release:
+    name: Update latest-python release
     needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
-    environment: pypi
+    if: github.ref == 'refs/heads/pynigiri'
     permissions:
-      id-token: write
-    if: github.event_name == 'release' && github.event.action == 'published'
+      contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: "{wheels-*,sdist}"
-          path: dist
+          pattern: nigiri-python-*
+          path: assets
           merge-multiple: true
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
+      - name: Update rolling latest-python release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest-python --yes || true
+          git tag -f latest-python
+          git push -f origin latest-python
+          gh release create latest-python assets/* \
+            --title "Latest Python Build" \
+            --notes "Rolling release from \`pynigiri\` branch. Updated on $(date -u +%Y-%m-%dT%H:%M:%SZ) from commit ${GITHUB_SHA::8}." \
+            --prerelease

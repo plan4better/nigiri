@@ -53,29 +53,38 @@ jobs:
           cp build/nigiri-import dist/
           cp build/nigiri-benchmark dist/
           cp build/nigiri-qa dist/
-          tar -czf nigiri-linux-${{ matrix.arch }}.tar.gz -C dist .
+          tar -czf nigiri-cpp-linux-${{ matrix.arch }}.tar.gz -C dist .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nigiri-linux-${{ matrix.arch }}
-          path: nigiri-linux-${{ matrix.arch }}.tar.gz
+          name: nigiri-cpp-linux-${{ matrix.arch }}
+          path: nigiri-cpp-linux-${{ matrix.arch }}.tar.gz
 
   release:
-    name: Upload release assets
+    name: Update latest-cpp release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/pynigiri'
     permissions:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: nigiri-linux-*
+          pattern: nigiri-cpp-linux-*
           path: assets
           merge-multiple: true
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: assets/*.tar.gz
+      - name: Update rolling latest-cpp release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest-cpp --yes || true
+          git tag -f latest-cpp
+          git push -f origin latest-cpp
+          gh release create latest-cpp assets/*.tar.gz \
+            --title "Latest C++ Build" \
+            --notes "Rolling release from \`pynigiri\` branch. Updated on $(date -u +%Y-%m-%dT%H:%M:%SZ) from commit ${GITHUB_SHA::8}." \
+            --prerelease
