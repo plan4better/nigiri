@@ -9,6 +9,10 @@ on:
     branches: [pynigiri]
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     name: Build (${{ matrix.arch }})
@@ -28,7 +32,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential cmake ninja-build git curl pkg-config libssl-dev
+          apt-get install -y bash build-essential cmake ninja-build git curl pkg-config libssl-dev
 
       - uses: actions/checkout@v4
         with:
