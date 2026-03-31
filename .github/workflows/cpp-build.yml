@@ -13,6 +13,8 @@ jobs:
   build:
     name: Build (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    container:
+      image: debian:bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -23,29 +25,42 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential cmake ninja-build git curl pkg-config libssl-dev
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14 ninja-build libssl-dev
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
 
       - name: Configure
         run: |
           cmake -G Ninja -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=gcc-14 \
-            -DCMAKE_CXX_COMPILER=g++-14 \
             -DNIGIRI_BUILD_TOOLS=ON \
             -DNIGIRI_BUILD_TESTS=OFF \
             -DNO_BUILDCACHE=ON
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      - name: Verify ABI compatibility
+        run: |
+          echo "=== Checking for _M_replace_cold (GCC 13+ symbol) ==="
+          FAIL=0
+          for f in $(find build -name '*.a'); do
+            if nm -C "$f" 2>/dev/null | grep -q '_M_replace_cold'; then
+              echo "FAIL: $(basename $f) references _M_replace_cold"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 0 ]; then
+            echo "OK: No _M_replace_cold references found"
+          else
+            echo "ERROR: ABI incompatible with Bookworm libstdc++"
+            exit 1
+          fi
 
       - name: Package SDK
         run: |
@@ -93,7 +108,7 @@ jobs:
           tar -czf nigiri-sdk-linux-${{ matrix.arch }}.tar.gz -C "$SDK_DIR" .
           rm -rf "$SDK_DIR"
 
-          # 7. Verify
+          # 7. Verify contents
           echo "=== Static libraries ==="
           tar tzf nigiri-sdk-linux-${{ matrix.arch }}.tar.gz | grep '\.a$' | wc -l
           echo "=== Key transitive headers ==="
@@ -130,10 +145,10 @@ jobs:
           git push -f origin latest-cpp
           gh release create latest-cpp assets/*.tar.gz \
             --title "Latest C++ SDK" \
-            --notes "Rolling SDK release from \`pynigiri\` branch. Updated on $(date -u +%Y-%m-%dT%H:%M:%SZ) from commit ${GITHUB_SHA::8}.
+            --notes "Rolling SDK release from \`pynigiri\` branch (Bookworm ABI). Updated on $(date -u +%Y-%m-%dT%H:%M:%SZ) from commit ${GITHUB_SHA::8}.
 
           Contains:
-          - Static libraries (libnigiri.a + all dependencies)
+          - Static libraries (libnigiri.a + all dependencies, GCC 12 / Bookworm ABI)
           - Headers (nigiri + all transitive dependency headers)
           - CLI tools (nigiri-import, nigiri-benchmark, nigiri-qa)" \
             --prerelease
