@@ -111,14 +111,17 @@ struct raptor {
       bool const require_bike_transport,
       bool const require_car_transport,
       bool const is_wheelchair,
-      transfer_time_settings const& tts)
+      transfer_time_settings const& tts,
+      std::uint8_t const max_transfers = kMaxTransfers)
       : tt_{tt},
         rtt_{rtt},
         n_days_{tt_.internal_interval_days().size().count()},
         n_locations_{tt_.n_locations()},
         n_routes_{tt.n_routes()},
         n_rt_transports_{Rt ? rtt->n_rt_transports() : 0U},
-        state_{state.resize(n_locations_, n_routes_, n_rt_transports_)},
+        // Only the via stages and rounds this search can use.
+        state_{state.resize(
+            n_locations_, n_routes_, n_rt_transports_, Vias, max_transfers)},
         tmp_{state_.get_tmp<Vias>()},
         best_{state_.get_best<Vias>()},
         round_times_{state.get_round_times<Vias>()},
@@ -188,7 +191,8 @@ struct raptor {
                unixtime_t const worst_time_at_dest,
                profile_idx_t const prf_idx,
                pareto_set<journey>& results) {
-    auto const end_k = std::min(max_transfers, kMaxTransfers) + 2U;
+    auto const end_k =
+        std::min(static_cast<unsigned>(max_transfers) + 2U, state_.n_rounds());
 
     auto const d_worst_at_dest = unix_to_delta(base(), worst_time_at_dest);
     for (auto& time_at_dest : time_at_dest_) {
